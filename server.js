@@ -1,44 +1,53 @@
-// server.js
-const cors_proxy = require('./lib/cors-anywhere');
-const host       = process.env.HOST || '0.0.0.0';
-const port       = process.env.PORT || 8080;
-const parseEnvList = env => env ? env.split(',') : [];
+import http from 'http';
+import { get as icyGet } from 'icy';
+import { URL } from 'url';
 
-// ブラック／ホワイトリスト
-const originBlacklist = parseEnvList(process.env.CORSANYWHERE_BLACKLIST);
-const originWhitelist = parseEnvList(process.env.CORSANYWHERE_WHITELIST);
+const PORT = process.env.PORT || 8080;
+const HOST = process.env.HOST || '0.0.0.0';
 
-// レートリミット（任意）
-const checkRateLimit = require('./lib/rate-limit')(process.env.CORSANYWHERE_RATELIMIT);
+// 汎用 Shoutcast/Icecast プロキシ
+const server = http.createServer((req, res) => {
+  // クエリから target URL を取得
+  const reqUrl = new URL(req.url, `http://${req.headers.host}`);
+  const target = reqUrl.searchParams.get('url');
+  if (!target) {
+    res.writeHead(400, { 'Content-Type': 'text/plain' });
+    return res.end('Missing ?url=...');
+  }
 
-const server = cors_proxy.createServer({
-  originBlacklist,
-  originWhitelist,
-  requireHeader: [],           // 認証ヘッダー不要
-  checkRateLimit,
-  removeHeaders: [
-    'cookie', 'cookie2',
-    'x-request-start', 'x-request-id',
-    'via', 'connect-time', 'total-route-time',
-  ],
-  redirectSameOrigin: true,
-  httpProxyOptions: { xfwd: false },
-  // setHeaders は削除
+  let parsed;
+  try {
+    parsed = new URL(target);
+  } catch {
+    res.writeHead(400, { 'Content-Type': 'text/plain' });
+    return res.end('Invalid URL');
+  }
+
+  // CORS ヘッダー＋オーディオヘッダー
+  res.writeHead(200, {
+    'Content-Type': 'audio/mpeg',
+    'Transfer-Encoding': 'chunked',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Range, Icy-MetaData',
+    'Access-Control-Expose-Headers': 'Content-Length, Content-Range'
+  });
+
+  // icy.get で HTTP/0.9 や HTTP/1.x 両対応
+  const icyReq = icyGet(target, icyRes => {
+    // メタデータイベントは無視
+    icyRes.on('metadata', () => {});
+    icyRes.pipe(res);
+  });
+
+  icyReq.on('error', err => {
+    console.error('ICY upstream error:', err);
+    if (!res.headersSent) {
+      res.writeHead(502, { 'Content-Type': 'text/plain' });
+    }
+    res.end('Upstream fetch error');
+  });
 });
 
-// バックエンドへのリクエストヘッダーを書き換えたい場合
-server.on('proxyReq', (proxyReq, req, res, options) => {
-  proxyReq.setHeader('Accept', 'audio/mpeg');
-});
-
-// ブラウザ向けレスポンスに必須の CORS ヘッダーを付与
-server.on('proxyRes', (proxyRes, req, res) => {
-  res.setHeader('Access-Control-Allow-Origin',  '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Range');
-  res.setHeader('Access-Control-Expose-Headers','Content-Length, Content-Range');
-});
-
-server.listen(port, host, () => {
-  console.log(CORS proxy running on http://${host}:${port});
+server.listen(PORT, HOST, () => {
+  console.log(`Universal Shoutcast/Icecast proxy running on http://${HOST}:${PORT}`);
 });
