@@ -1,44 +1,63 @@
-// server.js
-const cors_proxy = require('./lib/cors-anywhere');
-const host       = process.env.HOST || '0.0.0.0';
-const port       = process.env.PORT || 8080;
-const parseEnvList = env => env ? env.split(',') : [];
+import http from 'http';
+import net from 'net';
+import tls from 'tls';
+import { URL } from 'url';
 
-// ブラック／ホワイトリスト
-const originBlacklist = parseEnvList(process.env.CORSANYWHERE_BLACKLIST);
-const originWhitelist = parseEnvList(process.env.CORSANYWHERE_WHITELIST);
+const PORT = process.env.PORT || 8080;
+const HOST = process.env.HOST || '0.0.0.0';
 
-// レートリミット（任意）
-const checkRateLimit = require('./lib/rate-limit')(process.env.CORSANYWHERE_RATELIMIT);
+const server = http.createServer((req, res) => {
+  const reqUrl = new URL(req.url, `http://${req.headers.host}`);
+  const target = reqUrl.searchParams.get('url');
+  if (!target) {
+    res.writeHead(400, { 'Content-Type': 'text/plain' });
+    res.end('Missing ?url=...');
+    return;
+  }
 
-const server = cors_proxy.createServer({
-  originBlacklist,
-  originWhitelist,
-  requireHeader: [],           // 認証ヘッダー不要
-  checkRateLimit,
-  removeHeaders: [
-    'cookie', 'cookie2',
-    'x-request-start', 'x-request-id',
-    'via', 'connect-time', 'total-route-time',
-  ],
-  redirectSameOrigin: true,
-  httpProxyOptions: { xfwd: false },
-  // setHeaders は削除
+  let parsed;
+  try {
+    parsed = new URL(target);
+  } catch (err) {
+    res.writeHead(400, { 'Content-Type': 'text/plain' });
+    res.end('Invalid URL');
+    return;
+  }
+
+  const protocol = parsed.protocol;
+  const hostname = parsed.hostname;
+  const port = parsed.port || (protocol === 'https:' ? 443 : 80);
+  const path = parsed.pathname + (parsed.search || '');
+
+  const connectFn = protocol === 'https:' ? tls.connect : net.connect;
+
+  // CORS ヘッダー付きでストリームを返却
+  res.writeHead(200, {
+    'Content-Type': 'audio/mpeg',
+    'Transfer-Encoding': 'chunked',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Range, Icy-MetaData',
+    'Access-Control-Expose-Headers': 'Content-Length, Content-Range'
+  });
+
+  const upstream = connectFn(port, hostname, () => {
+    // HTTP/1.0 スタイルでリクエスト
+    upstream.write(
+      `GET ${path} HTTP/1.0\r\n` +
+      `Host: ${hostname}\r\n` +
+      `Icy-MetaData:1\r\n` +
+      `User-Agent: RawShoutcastProxy/1.0\r\n` +
+      `\r\n`
+    );
+    upstream.pipe(res);
+  });
+
+  upstream.on('error', err => {
+    console.error('Upstream error:', err);
+    res.destroy();
+  });
 });
 
-// バックエンドへのリクエストヘッダーを書き換えたい場合
-server.on('proxyReq', (proxyReq, req, res, options) => {
-  proxyReq.setHeader('Accept', 'audio/mpeg');
-});
-
-// ブラウザ向けレスポンスに必須の CORS ヘッダーを付与
-server.on('proxyRes', (proxyRes, req, res) => {
-  res.setHeader('Access-Control-Allow-Origin',  '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Range');
-  res.setHeader('Access-Control-Expose-Headers','Content-Length, Content-Range');
-});
-
-server.listen(port, host, () => {
-  console.log(`CORS proxy running on http://${host}:${port}`);
+server.listen(PORT, HOST, () => {
+  console.log(`Universal ICY proxy running on http://${HOST}:${PORT}`);
 });
