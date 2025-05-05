@@ -33,20 +33,21 @@ const server = http.createServer((req, res) => {
 
   // CORS ヘッダー付きでストリームを返却
   res.writeHead(200, {
-    'Content-Type': 'audio/mpeg',
-    'Transfer-Encoding': 'chunked',
-    'Access-Control-Allow-Origin': '*',
+    'Content-Type':            'audio/mpeg',
+    'Transfer-Encoding':       'chunked',
+    'Access-Control-Allow-Origin':  '*',
     'Access-Control-Allow-Headers': 'Range, Icy-MetaData',
-    'Access-Control-Expose-Headers': 'Content-Length, Content-Range'
+    'Access-Control-Expose-Headers':'Content-Length, Content-Range'
   });
 
   const upstream = connectFn(port, hostname, () => {
-    // HTTP/1.0 スタイルでリクエスト
+    // HTTP/1.1 と Connection: close を指定
     upstream.write(
-      `GET ${path} HTTP/1.0\r\n` +
+      `GET ${path} HTTP/1.1\r\n` +
       `Host: ${hostname}\r\n` +
       `Icy-MetaData:1\r\n` +
       `User-Agent: RawShoutcastProxy/1.0\r\n` +
+      `Connection: close\r\n` +
       `\r\n`
     );
     upstream.pipe(res);
