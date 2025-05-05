@@ -31,7 +31,7 @@
   "http-proxy":     "1.11.1",
   "proxy-from-env": "0.0.1",
   "icy":            "^2.1.0"
-}
+},
   "devDependencies": {
     "coveralls": "^2.11.6",
     "eslint": "^2.2.0",
