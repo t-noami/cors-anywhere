@@ -1,44 +1,53 @@
-// server.js
-const cors_proxy = require('cors-anywhere');
-const host       = process.env.HOST || '0.0.0.0';
-const port       = process.env.PORT || 8080;
-const parseEnvList = env => env ? env.split(',') : [];
+// Listen on a specific host via the HOST environment variable
+var host = process.env.HOST || '0.0.0.0';
+// Listen on a specific port via the PORT environment variable
+var port = process.env.PORT || 8080;
 
-// ブラック／ホワイトリスト
-const originBlacklist = parseEnvList(process.env.CORSANYWHERE_BLACKLIST);
-const originWhitelist = parseEnvList(process.env.CORSANYWHERE_WHITELIST);
+// Grab the blacklist from the command-line so that we can update the blacklist without deploying
+// again. CORS Anywhere is open by design, and this blacklist is not used, except for countering
+// immediate abuse (e.g. denial of service). If you want to block all origins except for some,
+// use originWhitelist instead.
+var originBlacklist = parseEnvList(process.env.CORSANYWHERE_BLACKLIST);
+var originWhitelist = parseEnvList(process.env.CORSANYWHERE_WHITELIST);
+function parseEnvList(env) {
+  if (!env) {
+    return [];
+  }
+  return env.split(',');
+}
 
-// レートリミット（任意）
-const checkRateLimit = require('./lib/rate-limit')(process.env.CORSANYWHERE_RATELIMIT);
+// Set up rate-limiting to avoid abuse of the public CORS Anywhere server.
+var checkRateLimit = require('./lib/rate-limit')(process.env.CORSANYWHERE_RATELIMIT);
 
-const server = cors_proxy.createServer({
-  originBlacklist,
-  originWhitelist,
-  requireHeader: [],           // 認証ヘッダー不要
-  checkRateLimit,
+var cors_proxy = require('./lib/cors-anywhere');
+cors_proxy.createServer({
+  originBlacklist: originBlacklist,
+  originWhitelist: originWhitelist,
+  requireHeader: [],
+  checkRateLimit: checkRateLimit,
   removeHeaders: [
-    'cookie', 'cookie2',
-    'x-request-start', 'x-request-id',
-    'via', 'connect-time', 'total-route-time',
+    'cookie',
+    'cookie2',
+    // Strip Heroku-specific headers
+    'x-request-start',
+    'x-request-id',
+    'via',
+    'connect-time',
+    'total-route-time',
+    // Other Heroku added debug headers
+    // 'x-forwarded-for',
+    // 'x-forwarded-proto',
+    // 'x-forwarded-port',
   ],
   redirectSameOrigin: true,
-  httpProxyOptions: { xfwd: false },
-  // setHeaders は削除
-});
+  httpProxyOptions: {
+    xfwd: false,
+  },
 
-// バックエンドへのリクエストヘッダーを書き換えたい場合
-server.on('proxyReq', (proxyReq, req, res, options) => {
-  proxyReq.setHeader('Accept', 'audio/mpeg');
-});
+  setHeaders: {
+    'accept': 'audio/mpeg'
+  }
 
-// ブラウザ向けレスポンスに必須の CORS ヘッダーを付与
-server.on('proxyRes', (proxyRes, req, res) => {
-  res.setHeader('Access-Control-Allow-Origin',  '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Range');
-  res.setHeader('Access-Control-Expose-Headers','Content-Length, Content-Range');
-});
-
-server.listen(port, host, () => {
-  console.log(`CORS proxy running on http://${host}:${port}`);
+}).listen(port, host, function() {
+  console.log('Running CORS Anywhere with Accept: audio/mpeg on ' + host + ':' + port);
 });
