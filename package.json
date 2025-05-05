@@ -27,10 +27,11 @@
     "demo.html",
     "server.js"
   ],
-  "dependencies": {
-    "http-proxy": "1.11.1",
-    "proxy-from-env": "0.0.1"
-  },
+"dependencies": {
+  "http-proxy":     "1.11.1",
+  "proxy-from-env": "0.0.1",
++ "icy":            "^0.3.0"
+},
   "devDependencies": {
     "coveralls": "^2.11.6",
     "eslint": "^2.2.0",
