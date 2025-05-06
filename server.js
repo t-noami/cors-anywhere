@@ -1,4 +1,3 @@
-// server.js
 import http           from 'http';
 import { get as icyGet } from 'icy';
 import { URL }        from 'url';
@@ -7,21 +6,24 @@ const HOST = process.env.HOST || '0.0.0.0';
 const PORT = process.env.PORT || 8080;
 
 const server = http.createServer((req, res) => {
-  // 1) ?url=… or /http(s)://…
+  // 1) クエリ ?url=... を優先
   const reqUrl = new URL(req.url, `http://${req.headers.host}`);
   let target = reqUrl.searchParams.get('url');
+
+  // 2) なければパス方式 (/http://... or /https://...)
   if (!target) {
     const p = decodeURIComponent(reqUrl.pathname.slice(1));
     if (p.startsWith('http://') || p.startsWith('https://')) {
       target = p;
     }
   }
+
   if (!target) {
     res.writeHead(400, { 'Content-Type': 'text/plain' });
-    return res.end('Missing ?url=… or /http(s)://… in path');
+    return res.end('Missing ?url=... or /http(s)://… in path');
   }
 
-  // 2) CORS とオーディオヘッダー
+  // CORS とオーディオヘッダー
   res.writeHead(200, {
     'Content-Type':              'audio/mpeg',
     'Transfer-Encoding':         'chunked',
@@ -30,15 +32,9 @@ const server = http.createServer((req, res) => {
     'Access-Control-Expose-Headers': 'Content-Length, Content-Range',
   });
 
-  // 3) 上流リクエストに Icy-MetaData ヘッダーを必ず追加
-  //    さらに、クライアントが Range を投げていればそれも転送
-  const headers = { 'Icy-MetaData': '1' };
-  if (req.headers.range) {
-    headers.Range = req.headers.range;
-  }
-
-  const icyReq = icyGet(target, { headers }, icyRes => {
-    icyRes.on('metadata', () => {}); // メタデータは無視
+  // ICY(HTTP/0.9) も HTTP/1.x もこの一行で両対応
+  const icyReq = icyGet(target, icyRes => {
+    icyRes.on('metadata', () => {}); // メタデータ無視
     icyRes.pipe(res);
   });
 
