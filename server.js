@@ -1,4 +1,3 @@
-// server.js
 import * as http     from 'http';
 import * as https    from 'https';
 import { get as icyGet } from 'icy';
@@ -8,28 +7,29 @@ import { URL }       from 'url';
 const HOST = process.env.HOST || '0.0.0.0';
 const PORT = process.env.PORT || 8080;
 
-// Shoutcast 用マウント候補（空パスを最優先に）
-const SC_CANDIDATES = ['', '/;?sid=1', '/;', '/stream'];
+// Shoutcast のマウント候補（順序を入れ替え）
+const SC_CANDIDATES = ['/;?sid=1', '/;', '/stream', ''];
 
 async function detectMount(target) {
-  // 1) Icecast か？→ /status-json.xsl から listenurl を取る
+  const u0 = new URL(target);
+  // 1) Icecast? → ルートの /status-json.xsl を叩く
   try {
-    const statUrl = target.replace(/\/$/, '') + '/status-json.xsl';
+    const statUrl = `${u0.origin}/status-json.xsl`;
     const res     = await fetch(statUrl);
     if (res.ok) {
       const json = await res.json();
       let src = json.icestats.source;
       if (Array.isArray(src)) src = src[0];
-      const u = new URL(src.listenurl);
-      return u.pathname + u.search;
+      const listen = new URL(src.listenurl);
+      return listen.pathname + listen.search;
     }
   } catch {
-    // Icecast でない、あるいは status-json.xsl が無い
+    // Icecast でない or JSON取得失敗 → 次へ
   }
 
-  // 2) Shoutcast のマウント候補を順に試す
+  // 2) Shoutcast マウント候補を順に試す
   for (let m of SC_CANDIDATES) {
-    if (await probeMount(target, m)) {
+    if (await probeMount(u0.origin, m)) {
       return m;
     }
   }
@@ -38,14 +38,13 @@ async function detectMount(target) {
   return '/;';
 }
 
-function probeMount(base, mount) {
+function probeMount(origin, mount) {
   return new Promise(resolve => {
-    const u      = new URL(base);
-    u.pathname   = mount;
+    const u = new URL(origin + mount);
     const client = u.protocol === 'https:' ? https : http;
     const req    = client.request({
       hostname: u.hostname,
-      port:     u.port || (u.protocol === 'https:' ? 443 : 80),
+      port:     u.port || (u.protocol==='https:'?443:80),
       path:     u.pathname + u.search,
       method:   'GET',
       headers:  {
@@ -55,8 +54,8 @@ function probeMount(base, mount) {
       },
       timeout: 3000
     }, res => {
-      const ct = (res.headers['content-type'] || '');
-      const ok = (res.statusCode === 200 || res.statusCode === 206)
+      const ct = (res.headers['content-type']||'');
+      const ok = (res.statusCode===200 || res.statusCode===206)
               && ct.startsWith('audio/');
       res.destroy();
       resolve(ok);
@@ -68,7 +67,7 @@ function probeMount(base, mount) {
 }
 
 const server = http.createServer((req, res) => {
-  // CORS / プリフライト
+  // CORS + プリフライト
   res.setHeader('Access-Control-Allow-Origin',  '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Range, Icy-MetaData');
@@ -78,9 +77,9 @@ const server = http.createServer((req, res) => {
     return res.end();
   }
 
-  // ?url=… or /http(s)://… で target を決定
+  // ?url=… or /http(s)://… で target
   const reqUrl = new URL(req.url, `http://${req.headers.host}`);
-  let target = reqUrl.searchParams.get('url');
+  let target   = reqUrl.searchParams.get('url');
   if (!target) {
     const p = decodeURIComponent(reqUrl.pathname.slice(1));
     if (/^https?:\/\//.test(p)) target = p;
@@ -90,7 +89,7 @@ const server = http.createServer((req, res) => {
     return res.end('Missing ?url or /http(s):// in path');
   }
 
-  // 非同期でマウント検出＆ストリーミング開始
+  // マウントを探してストリーミング
   (async () => {
     const mount     = await detectMount(target);
     const streamUrl = target.replace(/\/$/, '') + mount;
@@ -101,14 +100,12 @@ const server = http.createServer((req, res) => {
       'Transfer-Encoding': 'chunked'
     });
 
-    // 上流へ渡すヘッダー
+    // upstream へ渡すヘッダー
     const headers = {
       'Icy-MetaData': '1',
       'User-Agent':   'WinampMPEG/5.09'
     };
-    if (req.headers.range) {
-      headers.Range = req.headers.range;
-    }
+    if (req.headers.range) headers.Range = req.headers.range;
 
     // icy でパイプ
     const icyReq = icyGet(streamUrl, { headers }, icyRes => {
@@ -117,20 +114,17 @@ const server = http.createServer((req, res) => {
     });
     icyReq.on('error', err => {
       console.warn('icyGet failed, fallback TCP:', err);
-      // TCPフォールバック
+      // TCP GET フォールバック
       const u  = new URL(streamUrl);
       const sk = net.connect(u.port||80, u.hostname, () => {
         sk.write(`GET ${u.pathname + u.search}\r\n\r\n`);
         sk.pipe(res);
       });
-      sk.on('error', e => {
-        console.error('TCP fallback error:', e);
-        res.destroy();
-      });
+      sk.on('error', e => res.destroy());
     });
   })();
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`Listening on http://${HOST}:${PORT}`);
+  console.log(`Proxy running on http://${HOST}:${PORT}`);
 });
