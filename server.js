@@ -8,10 +8,10 @@ import { URL }        from 'url';
 const HOST = process.env.HOST || '0.0.0.0';
 const PORT = process.env.PORT || 8080;
 
-// Shoutcast マウント検出の候補リスト
+// Shoutcast 用に試行するマウント候補リスト
 const SC_CANDIDATES = ['/?sid=1', '/;', '/stream', ''];
 
-// CORS ヘッダーを常時セット
+// CORS ヘッダーを共通定義
 const COMMON_CORS = {
   'Access-Control-Allow-Origin':  '*',
   'Access-Control-Allow-Methods': 'GET, OPTIONS',
@@ -20,13 +20,13 @@ const COMMON_CORS = {
 };
 
 /**
- * マウントポイントを自動検出する関数
+ * マウントポイントを自動検出する
  * 1) Icecast の /status-json.xsl
- * 2) PLS プレイリスト (/listen.pls)
+ * 2) PLS (/listen.pls)
  * 3) Shoutcast のプローブ候補
  */
 async function detectMount(base) {
-  // 1) Icecast
+  // 1) Icecast?
   try {
     const stat = await fetch(`${base}/status-json.xsl`);
     if (stat.ok) {
@@ -38,7 +38,6 @@ async function detectMount(base) {
       return u.pathname + u.search;
     }
   } catch {}
-
   // 2) PLS プレイリスト
   try {
     const res = await fetch(`${base}/listen.pls`);
@@ -52,21 +51,19 @@ async function detectMount(base) {
       }
     }
   } catch {}
-
-  // 3) Shoutcast 候補を順にプローブ
+  // 3) Shoutcast プローブ候補
   for (const m of SC_CANDIDATES) {
     if (await probeMount(base, m)) {
       return m;
     }
   }
-
-  // 最終フォールバック
+  // フォールバック
   return '/;';
 }
 
 /**
- * GET + Range + Icy-MetaData で最初の1バイトだけ取り、
- * audio/* が返ってくれば true を返すプローブ
+ * GET + Range + Icy-MetaData で最初の1バイトだけ取得し、
+ * audio/* が返ってくれば true を返す
  */
 function probeMount(base, mount) {
   return new Promise(resolve => {
@@ -84,8 +81,9 @@ function probeMount(base, mount) {
       },
       timeout: 3000
     }, res => {
-      const ct = (res.headers['content-type']||'');
-      const ok = (res.statusCode===200 || res.statusCode===206) && ct.startsWith('audio/');
+      const ct = (res.headers['content-type'] || '');
+      const ok = (res.statusCode === 200 || res.statusCode === 206)
+              && ct.startsWith('audio/');
       res.destroy();
       resolve(ok);
     });
@@ -96,14 +94,14 @@ function probeMount(base, mount) {
 }
 
 const server = http.createServer((req, res) => {
-  // CORS & OPTIONS プリフライト
-  Object.entries(COMMON_CORS).forEach(([k,v]) => res.setHeader(k,v));
+  // CORS & プリフライト対応
+  Object.entries(COMMON_CORS).forEach(([k,v]) => res.setHeader(k, v));
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
     return res.end();
   }
 
-  // ?url=… または /http(s)://… でターゲット URL を取得
+  // ?url=… または /http(s)://… で target URL を取得
   const reqUrl = new URL(req.url, `http://${req.headers.host}`);
   let rawUrl   = reqUrl.searchParams.get('url');
   if (!rawUrl) {
@@ -115,39 +113,42 @@ const server = http.createServer((req, res) => {
     return res.end('Missing ?url=… or /http(s)://… in path');
   }
 
-  // 既にマウント付きで渡されていればそのまま使う（例: /stream）
-  const u0    = new URL(rawUrl);
-  const base  = u0.origin;
-  let mount   = (u0.pathname !== '/') ? u0.pathname + u0.search : '';
+  // 既にマウント付きで渡されていればそのまま使う
+  const u0  = new URL(rawUrl);
+  const base = u0.origin;
+  let mount  = (u0.pathname !== '/') ? u0.pathname + u0.search : '';
 
-  // 非同期でマウント検出後、ストリーミング開始
+  // マウント自動検出＆ストリーミング開始
   (async () => {
     if (!mount) {
       mount = await detectMount(base);
     }
     const streamUrl = base + mount;
 
-    // ブラウザ向けレスポンスヘッダー
+    // クライアント向けレスポンスヘッダー
     res.writeHead(200, {
       ...COMMON_CORS,
       'Content-Type':      'audio/mpeg',
       'Transfer-Encoding': 'chunked'
     });
 
-    // Shoutcast か Icecast かを判別
+    // Shoutcast 判定
     const isShoutcast = mount.startsWith('/;') || mount.startsWith('/?sid');
 
     if (isShoutcast) {
-      // ── Shoutcast: icy モジュール + TCPフォールバック ──
+      // ── Shoutcast 用: icy モジュール + TCP フォールバック ──
       const headers = {
         'Icy-MetaData':'1',
         'User-Agent':  'WinampMPEG/5.09',
         ...(req.headers.range ? { Range: req.headers.range } : {})
       };
-      const icyReq = icyGet(streamUrl, { headers }, icyRes => {
-        icyRes.on('metadata', () => {});
-        icyRes.pipe(res);
-      });
+      const icyReq = icyGet(
+        { url: streamUrl, headers },
+        icyRes => {
+          icyRes.on('metadata', () => {});
+          icyRes.pipe(res);
+        }
+      );
       icyReq.on('error', () => {
         // TCP (HTTP/0.9) フォールバック
         const u2 = new URL(streamUrl);
@@ -157,8 +158,9 @@ const server = http.createServer((req, res) => {
         });
         sk.on('error', () => res.destroy());
       });
+
     } else {
-      // ── Icecast: HTTP/1.x 生 GET ──
+      // ── Icecast 用: HTTP/1.x 生 GET ──
       const u2     = new URL(streamUrl);
       const client = u2.protocol === 'https:' ? https : http;
       const r2     = client.request({
