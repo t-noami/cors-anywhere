@@ -1,49 +1,75 @@
-import http           from 'http';
+import http            from 'http';
 import { get as icyGet } from 'icy';
-import { URL }        from 'url';
+import net             from 'net';
+import { URL }         from 'url';
 
 const HOST = process.env.HOST || '0.0.0.0';
 const PORT = process.env.PORT || 8080;
 
 const server = http.createServer((req, res) => {
-  // 1) クエリ ?url=... を優先
-  const reqUrl = new URL(req.url, http://${req.headers.host});
-  let target = reqUrl.searchParams.get('url');
+  // （CORS 設定は server.on('request') 側で済んでいる想定）
+  if (req.method === 'OPTIONS') {
+    return res.writeHead(204).end();
+  }
 
-  // 2) なければパス方式 (/http://... or /https://...)
-  if (!target) {
-    const p = decodeURIComponent(reqUrl.pathname.slice(1));
-    if (p.startsWith('http://') || p.startsWith('https://')) {
-      target = p;
+  // 1) ターゲット URL 抽出…（省略）
+
+  // 2) レスポンス用ヘッダー
+  res.writeHead(200, {
+    'Content-Type':      'audio/mpeg',
+    'Transfer-Encoding': 'chunked'
+  });
+
+  // 3) upstream ヘッダー
+  const headers = { 'Icy-MetaData': '1' };
+  if (req.headers.range) headers.Range = req.headers.range;
+
+  // 4) まずは icyGet で試す
+  let handled = false;
+  try {
+    const icyReq = icyGet(target, { headers }, icyRes => {
+      handled = true;
+      icyRes.on('metadata', () => {});
+      icyRes.pipe(res);
+    });
+    icyReq.on('error', onUpstreamError);
+  } catch (e) {
+    // すぐに sync なパースエラーならここへ
+    console.warn('icyGet sync error → fallback', e);
+    fallbackRaw();
+  }
+
+  // 5) 非同期パースエラーをキャッチ
+  function onUpstreamError(err) {
+    console.warn('ICY upstream error → fallback', err);
+    if (!handled) {
+      fallbackRaw();
+    } else {
+      res.destroy();
     }
   }
 
-  if (!target) {
-    res.writeHead(400, { 'Content-Type': 'text/plain' });
-    return res.end('Missing ?url=... or /http(s)://… in path');
+  // 6) HTTP/0.9 互換で自前 GET
+  function fallbackRaw() {
+    const u = new URL(target);
+    const port = u.port || 80;
+    const socket = net.connect(port, u.hostname, () => {
+      // HTTP/0.9 スタイルで GET 投げる
+      socket.write(`GET ${u.pathname + u.search}\r\n\r\n`);
+      socket.pipe(res);
+    });
+    socket.on('error', e => {
+      console.error('Fallback raw socket error', e);
+      if (!res.headersSent) {
+        res.writeHead(502, {'Content-Type':'text/plain'});
+        res.end('Bad Gateway');
+      } else {
+        res.destroy();
+      }
+    });
   }
-
-  // CORS とオーディオヘッダー
-  res.writeHead(200, {
-    'Content-Type':              'audio/mpeg',
-    'Transfer-Encoding':         'chunked',
-    'Access-Control-Allow-Origin':  '*',
-    'Access-Control-Allow-Headers': 'Range, Icy-MetaData',
-    'Access-Control-Expose-Headers': 'Content-Length, Content-Range',
-  });
-
-  // ICY(HTTP/0.9) も HTTP/1.x もこの一行で両対応
-  const icyReq = icyGet(target, icyRes => {
-    icyRes.on('metadata', () => {}); // メタデータ無視
-    icyRes.pipe(res);
-  });
-
-  icyReq.on('error', err => {
-    console.error('ICY upstream error:', err);
-    res.destroy();
-  });
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(Universal ICY proxy running on http://${HOST}:${PORT});
+  console.log(`Proxy running on http://${HOST}:${PORT}`);
 });
