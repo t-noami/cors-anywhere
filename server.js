@@ -1,153 +1,99 @@
-/*
- * server.js
- * Full implementation with debug logging
- */
-import { createRequire } from 'module';
-const require = createRequire(import.meta.url);
 import http from 'http';
-const https = require('https');
-const fs    = require('fs');
-const icy   = require('icy');
-const { URL } = require('url');
-const { Transform } = require('stream');
+import https from 'https';
+import { get as icyGet } from 'icy';
+import { URL } from 'url';
 
-// Config
-const HOST        = process.env.HOST || '0.0.0.0';
-const PORT        = process.env.PORT || 8080;
-const STREAM_USER = process.env.STREAM_USER || '';
-const STREAM_PASS = process.env.STREAM_PASS || '';
-const TLS_CERT    = process.env.TLS_CERT || '';
-const TLS_KEY     = process.env.TLS_KEY || '';
-const MAX_RETRIES = 5;
-const BASE_BACKOFF_MS = 1000;
-const IDLE_TIMEOUT_MS = 15000;
+const HOST = process.env.HOST || '0.0.0.0';
+const PORT = process.env.PORT || 8080;
 
-// Strip ICY metadata
-function createMetadataStripper(metaInt) {
-  let bytesUntilMeta = metaInt;
-  let metaRemain = 0;
-  return new Transform({ transform(chunk, _, cb) {
-      const out = [];
-      let pos = 0;
-      while (pos < chunk.length) {
-        if (metaRemain > 0) {
-          const skip = Math.min(metaRemain, chunk.length - pos);
-          pos += skip; metaRemain -= skip;
-        } else {
-          const toCopy = Math.min(bytesUntilMeta, chunk.length - pos);
-          out.push(chunk.slice(pos, pos + toCopy));
-          pos += toCopy; bytesUntilMeta -= toCopy;
-          if (bytesUntilMeta === 0) {
-            const len = chunk[pos++] || 0;
-            metaRemain = len * 16; bytesUntilMeta = metaInt;
-          }
-        }
-      }
-      cb(null, Buffer.concat(out));
-  }});
-}
+const server = http.createServer((req, res) => {
+  const reqUrl = new URL(req.url, `http://${req.headers.host}`);
 
-// Normalize icy:// URLs
-function normalizeScheme(url) {
-  return url.startsWith('icy://') ? 'http://' + url.slice(6) : url;
-}
+  // Determine target
+  let target = reqUrl.searchParams.get('url') || '';
+  if (!target) {
+    const p = decodeURIComponent(reqUrl.pathname.slice(1));
+    const q = reqUrl.search || '';
+    if (/^(?:https?:\/\/|icy:\/\/)/.test(p)) target = p + q;
+  }
+  if (!target) {
+    res.writeHead(400, { 'Content-Type': 'text/plain' });
+    return res.end('Missing ?url');
+  }
+  if (target.startsWith('icy://')) target = 'http://' + target.slice(6);
 
-// HTTP/0.9 fallback
-function fallbackHttp09(target, opts, res) {
-  console.log('[Fallback] HTTP/0.9', target);
-  const getFn = target.startsWith('https:') ? https.get : http.get;
-  getFn(target, { headers: opts.headers, agent: opts.agent }, raw => {
-    res.writeHead(200, {
-      'Connection': 'keep-alive',
-      'Transfer-Encoding': 'chunked',
-      ...raw.headers
-    });
-    res.flushHeaders(); raw.pipe(res);
-  }).on('error', e => console.warn('[Fallback] error', e));
-}
-
-// Core proxy logic with retry
-function proxyRequest(target, opts, res, retries = 0) {
-  console.log(`[Proxy] attempt ${retries+1} -> ${target}`, opts);
-  const req = icy.get(target, opts, upstream => {
-    console.log('[Proxy] upstream headers:', upstream.headers);
-    const metaInt = parseInt(upstream.headers['icy-metaint']||'0',10);
-    const headers = {
-      Date: new Date().toUTCString(), Server:'Node.js-ICY-Proxy', 'Cache-Control':'no-store',
-      Connection:'keep-alive','Transfer-Encoding':'chunked',
-      'Access-Control-Allow-Origin':'*','Access-Control-Allow-Credentials':'true',
-      'Access-Control-Expose-Headers':'Content-Length,Content-Range,Accept-Ranges,icy-metaint',
-      'Content-Type':upstream.headers['content-type']||'audio/mpeg',
-      'Content-Range':upstream.headers['content-range']||'',
-      'Accept-Ranges':upstream.headers['accept-ranges']||'',
-      'Content-Length':upstream.headers['content-length']||''
-    };
-    res.writeHead(upstream.statusCode||200, headers);
-    res.flushHeaders();
-    let stream = upstream;
-    if (metaInt>0) stream = upstream.pipe(createMetadataStripper(metaInt));
-    const timer=setTimeout(()=>req.abort(),IDLE_TIMEOUT_MS);
-    stream.on('data',()=>clearTimeout(timer));
-    stream.pipe(res);
-  });
-  req.on('error',err=>{
-    console.error(`[Proxy] error ${retries+1}`,err);
-    if (retries<MAX_RETRIES) {
-      setTimeout(()=>proxyRequest(target,opts,res,retries+1),BASE_BACKOFF_MS*2**retries);
-    } else fallbackHttp09(target,opts,res);
-  });
-}
-
-// HTTP server
-const server = http.createServer((req,res)=>{
-  console.log('[Server] ',req.method,req.url);
-    // HEAD quick return with metadata headers
+  // HEAD request emulation
   if (req.method === 'HEAD') {
-    res.writeHead(200, {
-      'Date': new Date().toUTCString(),
-      'Server': 'Node.js-ICY-Proxy',
-      'Cache-Control': 'no-store',
-      'Connection': 'keep-alive',
+    const u = new URL(target);
+    const isHttps = u.protocol === 'https:';
+    const requestFn = isHttps ? https.request : http.request;
+    const agent = isHttps ? new https.Agent({ servername: u.hostname, rejectUnauthorized: true }) : undefined;
+    const opts = {
+      method: 'HEAD',
+      hostname: u.hostname,
+      port: u.port || (isHttps ? 443 : 80),
+      path: u.pathname + u.search,
+      headers: {
+        'User-Agent': 'SecondLife (FMOD) Audio Client',
+        'Accept': 'audio/mpeg',
+        'Icy-MetaData': '1'
+      },
+      agent
+    };
+    const headReq = requestFn(opts, upstreamRes => {
+      res.writeHead(200, {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Credentials': 'true',
+        'Accept-Ranges': upstreamRes.headers['accept-ranges'] || 'bytes',
+        'Content-Type': upstreamRes.headers['content-type'] || 'audio/mpeg',
+        'Content-Range': upstreamRes.headers['content-range'] || '',
+        'icy-metaint': upstreamRes.headers['icy-metaint'] || ''
+      });
+      res.end();
+    });
+    headReq.on('error', () => res.writeHead(502).end());
+    headReq.end();
+    return;
+  }
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Credentials': 'true',
-      'Access-Control-Expose-Headers': 'Accept-Ranges, Content-Type, Content-Range, icy-metaint',
-      'Accept-Ranges': 'bytes',
-      'Content-Type': 'audio/mpeg'
+      'Access-Control-Allow-Headers': 'Range, Icy-MetaData',
+      'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS'
     });
-    res.flushHeaders();
     return res.end();
   }
 
-  const urlObj=new URL(req.url,`http://${req.headers.host}`);
-  // Remove client-side timestamp param 't' to avoid affecting upstream target
-  urlObj.searchParams.delete('t');
-  let target=urlObj.searchParams.get('url')||'';
-  if(!target){const p=decodeURIComponent(urlObj.pathname.slice(1)),q=urlObj.search||'';if(/^(?:https?:\/\/|icy:\/\/)/.test(p))target=p+q;}
-  console.log('[Server] target',target);
-  if(!target) return res.writeHead(400).end('Missing ?url');
-  target=normalizeScheme(target);
-  if(req.method==='OPTIONS') return res.writeHead(204,{
-    Date:new Date().toUTCString(),Server:'Node.js-ICY-Proxy','Cache-Control':'no-store',
-    Connection:'keep-alive','Access-Control-Allow-Origin':'*',
-    'Access-Control-Allow-Credentials':'true','Access-Control-Allow-Headers':'Range,Icy-MetaData,Authorization',
-    'Access-Control-Allow-Methods':'GET,OPTIONS'
-  }),res.end();
-
-  const upstreamHeaders={
-    'Icy-MetaData':'1','User-Agent':'SecondLife (FMOD) Audio Client',Accept:'audio/mpeg',Connection:'keep-alive'
+  const headers = {
+    'Icy-MetaData': '1',
+    'User-Agent': 'SecondLife (FMOD) Audio Client',
+    'Accept': 'audio/mpeg'
   };
-  if(STREAM_USER&&STREAM_PASS) upstreamHeaders.Authorization='Basic '+Buffer.from(`${STREAM_USER}:${STREAM_PASS}`).toString('base64');
-  if(req.headers.range) upstreamHeaders.Range=req.headers.range;
-  console.log('[Server] upstreamHeaders',upstreamHeaders);
+  if (req.headers.range) headers['Range'] = req.headers.range;
+  headers['Host'] = new URL(target).host;
 
-  let agent=null;
-  if(target.startsWith('https://')){
-    const opts={servername:new URL(target).hostname,rejectUnauthorized:true};
-    if(TLS_CERT&&TLS_KEY){opts.cert=fs.readFileSync(TLS_CERT);opts.key=fs.readFileSync(TLS_KEY);}agent=new https.Agent(opts);
-  }
-  const opts={headers:upstreamHeaders,followRedirects:true,maxRedirects:5,agent};
-  res.setHeader('Transfer-Encoding','chunked');
-  proxyRequest(target,opts,res);
+  const icyReq = icyGet(target, { headers }, icyRes => {
+    res.writeHead(icyRes.statusCode || 200, {
+      'Content-Type': icyRes.headers['content-type'] || 'audio/mpeg',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Credentials': 'true',
+      'Access-Control-Expose-Headers': 'Accept-Ranges, Content-Range, Content-Length, icy-metaint',
+      'Accept-Ranges': icyRes.headers['accept-ranges'] || 'bytes',
+      'Content-Range': icyRes.headers['content-range'] || '',
+      'icy-metaint': icyRes.headers['icy-metaint'] || ''
+    });
+    icyRes.on('metadata', () => {});
+    icyRes.pipe(res);
+  });
+
+  icyReq.on('error', err => {
+    console.error('ICY upstream error:', err);
+    res.destroy();
+  });
 });
 
-server.listen(PORT,HOST,()=>console.log(`Proxy on http://${HOST}:${PORT}`));
+server.listen(PORT, HOST, () => {
+  console.log(`SecondLife-compatible ICY proxy listening on http://${HOST}:${PORT}`);
+});
