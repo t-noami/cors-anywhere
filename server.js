@@ -7,7 +7,9 @@
  * CommonJS形式 (Render互換)
  */
 
-const http  = require('http');
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+import http from 'http';
 const https = require('https');
 const icy   = require('icy');
 const { URL } = require('url');
