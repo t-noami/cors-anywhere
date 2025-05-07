@@ -10,7 +10,7 @@
  * Explicit Transfer-Encoding: chunked
  * Stream buffering control with highWaterMark
  * Automatic retry with exponential backoff on errors
- * Dedicated metadata-stripping layer
+ * Dedicated metadata-stripping Transform stream
  * Immediate header flush via res.flushHeaders()
  * CommonJS/ESM hybrid for Render
  */
@@ -22,7 +22,7 @@ const https = require('https');
 const fs    = require('fs');
 const icy   = require('icy');
 const { URL } = require('url');
-const { PassThrough } = require('stream');
+const { Transform } = require('stream');
 
 const HOST        = process.env.HOST || '0.0.0.0';
 const PORT        = process.env.PORT || 8080;
@@ -34,11 +34,41 @@ const TLS_KEY     = process.env.TLS_KEY || '';
 const MAX_RETRIES      = 5;
 const BASE_BACKOFF_MS  = 1000;
 
+// Transform to strip ICY metadata blocks
+function createMetadataStripper(metaInt) {
+  let bytesUntilMeta = metaInt;
+  let metaBytesRemaining = 0;
+  return new Transform({
+    transform(chunk, _, callback) {
+      const output = [];
+      let offset = 0;
+      while (offset < chunk.length) {
+        if (metaBytesRemaining > 0) {
+          const skip = Math.min(metaBytesRemaining, chunk.length - offset);
+          offset += skip;
+          metaBytesRemaining -= skip;
+        } else {
+          const toCopy = Math.min(bytesUntilMeta, chunk.length - offset);
+          output.push(chunk.slice(offset, offset + toCopy));
+          offset += toCopy;
+          bytesUntilMeta -= toCopy;
+          if (bytesUntilMeta === 0) {
+            const lengthByte = chunk[offset];
+            offset += 1;
+            metaBytesRemaining = lengthByte * 16;
+            bytesUntilMeta = metaInt;
+          }
+        }
+      }
+      this.push(Buffer.concat(output));
+      callback();
+    }
+  });
+}
+
 // Normalize icy:// to http://
 function normalizeScheme(target) {
-  return target.startsWith('icy://')
-    ? 'http://' + target.slice(6)
-    : target;
+  return target.startsWith('icy://') ? 'http://' + target.slice(6) : target;
 }
 
 // Fallback for HTTP/0.9 ICY servers
@@ -50,10 +80,12 @@ function fallbackHttp09(target, opts, onResponse) {
   return req;
 }
 
-// Proxy request with retry/backoff and metadata stripping
+// Core proxy function with retries
 function proxyRequest(target, opts, res, retries = 0) {
   const req = icy.get(target, opts, icyRes => {
-    // On first chunk, flush headers immediately
+    // Read icy-metaint to setup stripper
+    const metaInt = parseInt(icyRes.headers['icy-metaint'] || '0', 10);
+    // Prepare response headers
     const h = icyRes.headers;
     const status = icyRes.statusCode || 200;
     const respHeaders = {
@@ -73,12 +105,13 @@ function proxyRequest(target, opts, res, retries = 0) {
     res.writeHead(status, respHeaders);
     res.flushHeaders();
 
-    // Dedicated metadata event handler (stripped)
-    icyRes.on('metadata', md => { /* drop or handle as needed */ });
-
-    // Buffering control
-    const pass = new PassThrough({ highWaterMark: 64 * 1024 });
-    icyRes.pipe(pass).pipe(res);
+    // Setup metadata stripper if needed
+    let stream = icyRes;
+    if (metaInt > 0) {
+      const stripper = createMetadataStripper(metaInt);
+      stream = icyRes.pipe(stripper);
+    }
+    stream.pipe(res);
   });
 
   req.on('error', err => {
@@ -102,13 +135,13 @@ function proxyRequest(target, opts, res, retries = 0) {
         };
         res.writeHead(200, fallbackHeaders);
         res.flushHeaders();
-        const pass = new PassThrough({ highWaterMark: 64 * 1024 });
-        rawRes.pipe(pass).pipe(res);
+        rawRes.pipe(res);
       });
     }
   });
 }
 
+// HTTP server setup
 const server = http.createServer((req, res) => {
   const reqUrl = new URL(req.url, `http://${req.headers.host}`);
   let target = reqUrl.searchParams.get('url') || '';
@@ -123,7 +156,7 @@ const server = http.createServer((req, res) => {
 
   target = normalizeScheme(target);
 
-  // CORS Preflight
+  // CORS preflight
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
       'Date': new Date().toUTCString(),
@@ -165,8 +198,8 @@ const server = http.createServer((req, res) => {
   const icyOpts = { headers: upstreamHeaders, followRedirects: true, maxRedirects: 5, agent };
 
   // Explicitly set chunked transfer encoding for compatibility
-res.setHeader('Transfer-Encoding', 'chunked');
-proxyRequest(target, icyOpts, res);
+  res.setHeader('Transfer-Encoding', 'chunked');
+  proxyRequest(target, icyOpts, res);
 });
 
 server.listen(PORT, HOST, () => console.log(`Proxy running on http://${HOST}:${PORT}`));
