@@ -72,7 +72,63 @@ function proxyRequest(target, opts, res, retries = 0) {
 }
 
 // HTTP server setup
+// HTTP server setup
 const server = http.createServer((req, res) => {
+  console.log('[Server] incoming', req.method, req.url);
+
+  // Handle HEAD without target resolution
+  if (req.method === 'HEAD') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.writeHead(200);
+    return res.end();
+  }
+
+  const urlObj = new URL(req.url, `http://${req.headers.host}`);
+  let target = urlObj.searchParams.get('url') || '';
+  if (!target) {
+    const p = decodeURIComponent(urlObj.pathname.slice(1));
+    const q = urlObj.search || '';
+    if (/^(?:https?:\/\/|icy:\/\/)/.test(p)) target = p + q;
+  }
+  console.log('[Server] target:', target);
+  if (!target) {
+    res.writeHead(400, { 'Content-Type': 'text/plain' });
+    return res.end('Missing ?url');
+  }
+
+  target = normalizeScheme(target);
+
+  // CORS preflight
+  if (req.method === 'OPTIONS') {
+    console.log('[Server] preflight');
+    res.writeHead(204, {
+      Date: new Date().toUTCString(),
+      Server: 'Node.js-ICY-Proxy',
+      'Cache-Control': 'no-store',
+      Connection: 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Credentials': 'true',
+      'Access-Control-Allow-Headers': 'Range, Icy-MetaData, Authorization',
+      'Access-Control-Allow-Methods': 'GET, OPTIONS'
+    });
+    return res.end();
+  }
+
+  // Build upstream headers
+  const upstreamHeaders = {
+    'Icy-MetaData': '1',
+    'User-Agent': 'SecondLife (FMOD) Audio Client',
+    Accept: 'audio/mpeg',
+    Connection: 'keep-alive'
+  };
+  if (STREAM_USER && STREAM_PASS) upstreamHeaders.Authorization = 'Basic ' + Buffer.from(`${STREAM_USER}:${STREAM_PASS}`).toString('base64');
+  if (req.headers.range) upstreamHeaders.Range = req.headers.range;
+  console.log('[Server] upstreamHeaders:', upstreamHeaders);
+
+  // SSL/TLS agent
+  ...
+((req, res) => {
   console.log('[Server] incoming', req.method, req.url);
   const urlObj = new URL(req.url, `http://${req.headers.host}`);
   let target = urlObj.searchParams.get('url') || '';
