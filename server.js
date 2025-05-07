@@ -46,13 +46,23 @@ const server = http.createServer((req, res) => {
   if (req.headers.range) headers['Range'] = req.headers.range;
 
   // 初期レスポンス
-  res.writeHead(200, {
-    'Content-Type':'audio/mpeg',
-    'Transfer-Encoding':'chunked',
-    'Access-Control-Allow-Origin':'*',
-    'Access-Control-Allow-Headers':'Range, Icy-MetaData, Authorization',
-    'Access-Control-Expose-Headers':'Content-Length, Content-Range, Accept-Ranges'
-  });
+  // CORS preflight handling
+  if (req.method === 'OPTIONS') {
+    return res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Headers': 'Range, Icy-MetaData, Authorization',
+      'Access-Control-Allow-Methods': 'GET,OPTIONS',
+      'Access-Control-Max-Age': '86400'
+    }) && res.end();
+  }
+
+  // レスポンスは upstream が返してきたステータスとヘッダーを元に設定
+  // 初期設定: CORS は常に設定
+  const defaultCORS = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Range, Icy-MetaData, Authorization',
+    'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges'
+  };
 
   // Agent設定 (SNI/クライアント証明書対応)
   let agent = null;
