@@ -1,10 +1,35 @@
 import http from 'http';
 import https from 'https';
+import net from 'net';
 import { get as icyGet } from 'icy';
 import { URL } from 'url';
 
 const HOST = process.env.HOST || '0.0.0.0';
 const PORT = process.env.PORT || 8080;
+
+function rawSocketStream(host, port, res) {
+  const socket = net.connect(port, host, () => {
+    console.log('[RawSocket] Connected to', host + ':' + port);
+  });
+
+  socket.on('data', chunk => {
+    res.write(chunk);
+  });
+
+  socket.on('end', () => {
+    console.log('[RawSocket] Stream ended');
+    res.end();
+  });
+
+  socket.on('error', err => {
+    console.error('[RawSocket] Stream error:', err.message);
+    res.destroy();
+  });
+
+  res.on('close', () => {
+    socket.destroy();
+  });
+}
 
 function streamWithFallback(targetUrl, res) {
   const parsed = new URL(targetUrl);
@@ -27,7 +52,15 @@ function streamWithFallback(targetUrl, res) {
 
   req.on('error', err => {
     console.error('[Fallback] HTTP upstream error:', err.message);
-    res.destroy();
+
+    const host = parsed.hostname;
+    const port = parseInt(parsed.port || (parsed.protocol === 'https:' ? 443 : 80));
+    if (host && port) {
+      console.log('[Fallback] Trying raw socket as final fallback');
+      rawSocketStream(host, port, res);
+    } else {
+      res.destroy();
+    }
   });
 }
 
