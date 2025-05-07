@@ -101,8 +101,22 @@ function proxyRequest(target, opts, res, retries = 0) {
 // HTTP server
 const server = http.createServer((req,res)=>{
   console.log('[Server] ',req.method,req.url);
-  // HEAD quick return
-  if (req.method==='HEAD') return res.writeHead(200,{'Access-Control-Allow-Origin':'*'}),res.end();
+    // HEAD quick return with metadata headers
+  if (req.method === 'HEAD') {
+    res.writeHead(200, {
+      'Date': new Date().toUTCString(),
+      'Server': 'Node.js-ICY-Proxy',
+      'Cache-Control': 'no-store',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Credentials': 'true',
+      'Access-Control-Expose-Headers': 'Accept-Ranges, Content-Type, Content-Range, icy-metaint',
+      'Accept-Ranges': 'bytes',
+      'Content-Type': 'audio/mpeg'
+    });
+    res.flushHeaders();
+    return res.end();
+  }
 
   const urlObj=new URL(req.url,`http://${req.headers.host}`);
   // Remove client-side timestamp param 't' to avoid affecting upstream target
