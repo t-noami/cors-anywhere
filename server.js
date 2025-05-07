@@ -10,6 +10,24 @@ const PORT = process.env.PORT || 8080;
 function rawSocketStream(host, port, res) {
   const socket = net.connect(port, host, () => {
     console.log('[RawSocket] Connected to', host + ':' + port);
+    try {
+      res.writeHead(200, {
+        'Content-Type': 'audio/mpeg',
+        'Transfer-Encoding': 'chunked',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Range, Icy-MetaData',
+        'Access-Control-Expose-Headers': 'Content-Length, Content-Range, icy-metaint',
+        'Connection': 'keep-alive',
+        'Cache-Control': 'no-cache',
+        'icy-name': 'SL-Compatible Proxy Stream',
+        'icy-notice1': 'This stream is public',
+        'icy-pub': '1',
+        'icy-metaint': '0',
+        'Server': 'SHOUTcast Server/Linux'
+      });
+    } catch (e) {
+      // ヘッダー送信済みの場合は無視
+    }
   });
 
   let headerParsed = false;
