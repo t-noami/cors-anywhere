@@ -71,7 +71,68 @@ function proxyRequest(target, opts, res, retries = 0) {
   });
 }
 
-// HTTP server ...
-const server = http.createServer((req, res) => { /* ... */ });
+// HTTP server setup
+const server = http.createServer((req, res) => {
+  console.log('[Server] incoming', req.method, req.url);
+  const urlObj = new URL(req.url, `http://${req.headers.host}`);
+  let target = urlObj.searchParams.get('url') || '';
+  if (!target) {
+    const p = decodeURIComponent(urlObj.pathname.slice(1));
+    const q = urlObj.search || '';
+    if (/^(?:https?:\/\/|icy:\/\/)/.test(p)) target = p + q;
+  }
+  console.log('[Server] target:', target);
+  if (!target) {
+    res.writeHead(400, { 'Content-Type': 'text/plain' });
+    return res.end('Missing ?url');
+  }
 
-server.listen(PORT, HOST, () => console.log(`Proxy listening on http://${HOST}:${PORT}`));
+  target = normalizeScheme(target);
+
+  if (req.method === 'OPTIONS') {
+    console.log('[Server] preflight');
+    res.writeHead(204, {
+      Date: new Date().toUTCString(),
+      Server: 'Node.js-ICY-Proxy',
+      'Cache-Control': 'no-store',
+      Connection: 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Credentials': 'true',
+      'Access-Control-Allow-Headers': 'Range, Icy-MetaData, Authorization',
+      'Access-Control-Allow-Methods': 'GET, OPTIONS'
+    });
+    return res.end();
+  }
+
+  // Build upstream headers
+  const upstreamHeaders = {
+    'Icy-MetaData': '1',
+    'User-Agent': 'SecondLife (FMOD) Audio Client',
+    Accept: 'audio/mpeg',
+    Connection: 'keep-alive'
+  };
+  if (STREAM_USER && STREAM_PASS) upstreamHeaders.Authorization = 'Basic ' + Buffer.from(`${STREAM_USER}:${STREAM_PASS}`).toString('base64');
+  if (req.headers.range) upstreamHeaders.Range = req.headers.range;
+  console.log('[Server] upstreamHeaders:', upstreamHeaders);
+
+  // SSL/TLS agent
+  let agent = null;
+  if (target.startsWith('https://')) {
+    const agentOpts = { servername: new URL(target).hostname, rejectUnauthorized: true };
+    if (TLS_CERT && TLS_KEY) {
+      agentOpts.cert = fs.readFileSync(TLS_CERT);
+      agentOpts.key  = fs.readFileSync(TLS_KEY);
+    }
+    agent = new https.Agent(agentOpts);
+  }
+
+  const opts = { headers: upstreamHeaders, followRedirects: true, maxRedirects: 5, agent };
+
+  // Ensure chunked transfer
+  res.setHeader('Transfer-Encoding', 'chunked');
+  if (req.method === 'HEAD') return res.end();
+
+  proxyRequest(target, opts, res);
+});
+
+server.listen(PORT, HOST, () => console.log(`Proxy listening on http://${HOST}:${PORT}`));(PORT, HOST, () => console.log(`Proxy listening on http://${HOST}:${PORT}`));
