@@ -1,9 +1,35 @@
 import http from 'http';
+import https from 'https';
 import { get as icyGet } from 'icy';
 import { URL } from 'url';
 
 const HOST = process.env.HOST || '0.0.0.0';
 const PORT = process.env.PORT || 8080;
+
+function streamWithFallback(targetUrl, res) {
+  const parsed = new URL(targetUrl);
+  const client = parsed.protocol === 'https:' ? https : http;
+
+  const options = {
+    headers: {
+      'Icy-MetaData': '1',
+      'User-Agent': 'SecondLife (FMOD) Audio Client',
+      'Accept': 'audio/mpeg',
+      'Connection': 'keep-alive',
+      'Range': 'bytes=0-'
+    }
+  };
+
+  const req = client.get(targetUrl, options, upstream => {
+    console.log('[Fallback] Upstream headers:', upstream.headers);
+    upstream.pipe(res);
+  });
+
+  req.on('error', err => {
+    console.error('[Fallback] HTTP upstream error:', err.message);
+    res.destroy();
+  });
+}
 
 const server = http.createServer((req, res) => {
   const reqUrl = new URL(req.url, `http://${req.headers.host}`);
@@ -45,8 +71,8 @@ const server = http.createServer((req, res) => {
   });
 
   icyReq.on('error', err => {
-    console.error('[Proxy] ICY upstream error:', err);
-    res.destroy();
+    console.warn('[Proxy] ICY upstream failed, falling back to raw HTTP:', err.message);
+    streamWithFallback(target, res);
   });
 });
 
