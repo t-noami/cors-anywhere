@@ -123,7 +123,9 @@ function proxyRequest(target, opts, res, retries = 0) {
 const server = http.createServer((req, res) => {
   console.log('[Server] incoming', req.method, req.url);
   const reqUrl = new URL(req.url, `http://${req.headers.host}`);
-  let target = reqUrl.searchParams.get('url') || '';
+  const p = decodeURIComponent(reqUrl.pathname.slice(1));
+    const search = reqUrl.search || '';
+    target = p + search;;
   if (!target) {
     const p = decodeURIComponent(reqUrl.pathname.slice(1));
     if (/^(?:https?:\/\/|icy:\/\/)/.test(p)) target = p;
