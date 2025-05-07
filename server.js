@@ -12,8 +12,22 @@ function rawSocketStream(host, port, res) {
     console.log('[RawSocket] Connected to', host + ':' + port);
   });
 
+  let headerParsed = false;
+  let buffer = '';
+
   socket.on('data', chunk => {
-    res.write(chunk);
+    if (!headerParsed) {
+      buffer += chunk.toString('utf-8');
+      const headerEnd = buffer.indexOf('\r\n\r\n');
+      if (headerEnd !== -1) {
+        headerParsed = true;
+        const headerLength = Buffer.byteLength(buffer.slice(0, headerEnd + 4));
+        const remaining = chunk.slice(chunk.length - (buffer.length - headerLength));
+        res.write(remaining);
+      }
+    } else {
+      res.write(chunk);
+    }
   });
 
   socket.on('end', () => {
