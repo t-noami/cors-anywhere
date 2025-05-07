@@ -66,7 +66,9 @@ const server = http.createServer((req, res) => {
 
   const icyReq = icyGet(target, icyRes => {
     console.log('[Proxy] ICY Response Headers:', icyRes.headers || '[no headers]');
-    icyRes.on('metadata', () => {}); // メタデータ無視
+    icyRes.on('metadata', metadata => {
+      console.log('[Proxy] ICY Metadata received (ignored):', metadata.toString());
+    });
     icyRes.pipe(res);
   });
 
