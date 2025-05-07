@@ -106,7 +106,7 @@ const server = http.createServer((req,res)=>{
 
   const urlObj=new URL(req.url,`http://${req.headers.host}`);
   // Remove client-side timestamp param 't' to avoid affecting upstream target
-  urlObj.searchParams.delete('t');(req.url,`http://${req.headers.host}`);
+  urlObj.searchParams.delete('t');
   let target=urlObj.searchParams.get('url')||'';
   if(!target){const p=decodeURIComponent(urlObj.pathname.slice(1)),q=urlObj.search||'';if(/^(?:https?:\/\/|icy:\/\/)/.test(p))target=p+q;}
   console.log('[Server] target',target);
