@@ -33,9 +33,42 @@ function proxyRequest(target, opts, res, retries = 0) {
   console.log('[Proxy] calling icy.get with opts:', opts);
   const req = icy.get(target, opts, upstream => {
     console.log('[Proxy] upstream headers:', upstream.headers);
-    /* existing handling... */
+    const metaInt = parseInt(upstream.headers['icy-metaint'] || '0', 10);
+    const status = upstream.statusCode || 200;
+    const headers = {
+      Date: new Date().toUTCString(),
+      Server: 'Node.js-ICY-Proxy',
+      'Cache-Control': 'no-store',
+      Connection: 'keep-alive',
+      'Transfer-Encoding': 'chunked',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Credentials': 'true',
+      'Access-Control-Expose-Headers': 'Content-Length,Content-Range,Accept-Ranges,icy-metaint',
+      'Content-Type': upstream.headers['content-type'] || 'audio/mpeg',
+      'Content-Range': upstream.headers['content-range'] || '',
+      'Accept-Ranges': upstream.headers['accept-ranges'] || '',
+      'Content-Length': upstream.headers['content-length'] || ''
+    };
+    res.writeHead(status, headers);
+    res.flushHeaders();
+    let stream = upstream;
+    if (metaInt > 0) stream = upstream.pipe(createMetadataStripper(metaInt));
+    const timer = setTimeout(() => req.abort(), IDLE_TIMEOUT_MS);
+    stream.on('data', () => clearTimeout(timer));
+    stream.pipe(res);
   });
-  req.on('error', err => { /* retry logic... */ });
+
+  req.on('error', err => {
+    console.error(`[Proxy] error on attempt ${retries + 1}:`, err);
+    if (retries < MAX_RETRIES) {
+      const backoff = BASE_BACKOFF_MS * Math.pow(2, retries);
+      console.log(`[Proxy] retrying in ${backoff}ms...`);
+      setTimeout(() => proxyRequest(target, opts, res, retries + 1), backoff);
+    } else {
+      console.error('[Proxy] max retries, falling back to HTTP/0.9');
+      fallbackHttp09(target, opts, res);
+    }
+  });
 }
 
 // HTTP server ...
