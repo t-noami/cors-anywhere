@@ -1,12 +1,12 @@
 /*
  * server.js
- * CORS Anywhere ベース + Icy-Metadata ストリップ + Basic 認証
+ * ESM 対応 CORS Anywhere ベース + Icy-Metadata ストリップ + Basic 認証
  * ブラウザには純粋な音声データのみを送信
  */
 
-const corsAnywhere = require('cors-anywhere');
-const http = require('http');
-const { Transform } = require('stream');
+import corsAnywhere from 'cors-anywhere';
+import http from 'http';
+import { Transform } from 'stream';
 
 // 環境変数からホストとポート
 const host = process.env.HOST || '0.0.0.0';
