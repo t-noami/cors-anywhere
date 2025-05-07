@@ -7,6 +7,16 @@ import { URL } from 'url';
 const HOST = process.env.HOST || '0.0.0.0';
 const PORT = process.env.PORT || 8080;
 
+// MPEGヘッダーの開始位置を探す関数
+function findMpegFrame(buffer) {
+  for (let i = 0; i < buffer.length - 1; i++) {
+    if (buffer[i] === 0xFF && (buffer[i + 1] & 0xE0) === 0xE0) {
+      return i;
+    }
+  }
+  return -1;
+}
+
 function rawSocketStream(host, port, res) {
   const socket = net.connect(port, host, () => {
     console.log('[RawSocket] Connected to', host + ':' + port);
@@ -29,17 +39,15 @@ function rawSocketStream(host, port, res) {
   });
 
   let headerParsed = false;
-  let headerBuffer = Buffer.alloc(0);
+  let buffer = Buffer.alloc(0);
 
   socket.on('data', chunk => {
     if (!headerParsed) {
-      headerBuffer = Buffer.concat([headerBuffer, chunk]);
-      const headerEndIndex = headerBuffer.indexOf('\r\n\r\n');
-      if (headerEndIndex !== -1) {
+      buffer = Buffer.concat([buffer, chunk]);
+      const frameStart = findMpegFrame(buffer);
+      if (frameStart !== -1) {
         headerParsed = true;
-        const audioStart = headerEndIndex + 4;
-        const remaining = headerBuffer.slice(audioStart);
-        res.write(remaining);
+        res.write(buffer.slice(frameStart));
       }
     } else {
       res.write(chunk);
@@ -106,14 +114,12 @@ const server = http.createServer((req, res) => {
 
   const reqUrl = new URL(req.url, `http://${req.headers.host}`);
   let target = reqUrl.searchParams.get('url');
-
   if (!target) {
     const p = decodeURIComponent(reqUrl.pathname.slice(1));
     if (p.startsWith('http://') || p.startsWith('https://')) {
       target = p;
     }
   }
-
   if (!target) {
     res.writeHead(400, { 'Content-Type': 'text/plain' });
     return res.end('Missing ?url=... or /http(s)://… in path');
@@ -135,8 +141,6 @@ const server = http.createServer((req, res) => {
     'icy-metaint': '0',
     'Server': 'SHOUTcast Server/Linux'
   });
-
-  const parsed = new URL(target);
 
   const icyReq = icyGet(target, icyRes => {
     console.log('[Proxy] ICY Response Headers:', icyRes.headers || '[no headers]');
