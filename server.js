@@ -24,15 +24,22 @@ const server = http.createServer((req, res) => {
   console.log('[Proxy] Target URL:', target);
 
   res.writeHead(200, {
-    'Content-Type':              'audio/mpeg',
-    'Transfer-Encoding':         'chunked',
-    'Access-Control-Allow-Origin':  '*',
+    'Content-Type': 'audio/mpeg',
+    'Transfer-Encoding': 'chunked',
+    'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Range, Icy-MetaData',
-    'Access-Control-Expose-Headers': 'Content-Length, Content-Range',
+    'Access-Control-Expose-Headers': 'Content-Length, Content-Range, icy-metaint',
+    'Connection': 'keep-alive',
+    'Cache-Control': 'no-cache',
+    'icy-name': 'SL-Compatible Proxy Stream',
+    'icy-notice1': 'This stream is public',
+    'icy-pub': '1',
+    'icy-metaint': '0',
+    'Server': 'SHOUTcast Server/Linux'
   });
 
   const icyReq = icyGet(target, icyRes => {
-    console.log('[Proxy] ICY Response Headers:', icyRes.headers);
+    console.log('[Proxy] ICY Response Headers:', icyRes.headers || '[no headers]');
     icyRes.on('metadata', () => {}); // メタデータ無視
     icyRes.pipe(res);
   });
