@@ -29,16 +29,16 @@ function rawSocketStream(host, port, res) {
   });
 
   let headerParsed = false;
-  let buffer = '';
+  let headerBuffer = Buffer.alloc(0);
 
   socket.on('data', chunk => {
     if (!headerParsed) {
-      buffer += chunk.toString('utf-8');
-      const headerEnd = buffer.indexOf('\r\n\r\n');
-      if (headerEnd !== -1) {
+      headerBuffer = Buffer.concat([headerBuffer, chunk]);
+      const headerEndIndex = headerBuffer.indexOf('\r\n\r\n');
+      if (headerEndIndex !== -1) {
         headerParsed = true;
-        const headerLength = Buffer.byteLength(buffer.slice(0, headerEnd + 4));
-        const remaining = chunk.slice(chunk.length - (buffer.length - headerLength));
+        const audioStart = headerEndIndex + 4;
+        const remaining = headerBuffer.slice(audioStart);
         res.write(remaining);
       }
     } else {
@@ -82,7 +82,6 @@ function streamWithFallback(targetUrl, res) {
 
   req.on('error', err => {
     console.error('[Fallback] HTTP upstream error:', err.message);
-
     const host = parsed.hostname;
     const port = parseInt(parsed.port || (parsed.protocol === 'https:' ? 443 : 80));
     if (host && port) {
@@ -136,6 +135,8 @@ const server = http.createServer((req, res) => {
     'icy-metaint': '0',
     'Server': 'SHOUTcast Server/Linux'
   });
+
+  const parsed = new URL(target);
 
   const icyReq = icyGet(target, icyRes => {
     console.log('[Proxy] ICY Response Headers:', icyRes.headers || '[no headers]');
