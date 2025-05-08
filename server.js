@@ -6,8 +6,19 @@ const HOST = process.env.HOST || '0.0.0.0';
 const PORT = process.env.PORT || 8080;
 
 const server = http.createServer((req, res) => {
-  // 1) クエリ ?url=... を優先
+  // リクエスト URL をパース
   const reqUrl = new URL(req.url, `http://${req.headers.host}`);
+
+  // ヘルスチェック用エンドポイント
+  if (reqUrl.pathname === '/health') {
+    res.writeHead(200, {
+      'Content-Type': 'text/plain',
+      'Access-Control-Allow-Origin': '*'
+    });
+    return res.end('OK');
+  }
+
+  // 1) クエリ ?url=... を優先
   let target = reqUrl.searchParams.get('url');
 
   // 2) なければパス方式 (/http://... or /https://...)
